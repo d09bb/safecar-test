@@ -1,0 +1,27 @@
+# Local automation
+auto_push.sh
+
+# Root-level temporary / backup files
+/safe_robot_project*.bak*
+/safe_robot_project*b ak*
+/safe_robot_project_before_*
+/safe_robot_project_*before*
+/safe_robot_project_*backup*
+/safe_robot_project_*fixed*
+/safe_robot_project_*keepalive*
+/safe_robot_project_*watch*
+/safe_robot_project_*obstacle*
+/safe_robot_project_*no_for*
+/saf*
+
+# Runtime / cache
+__pycache__/
+*.pyc
+*.log
+*.tmp
+*.tar.gz
+*.zip
+
+# Editor / system
+*~
+.vscode/
