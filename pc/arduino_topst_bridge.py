@@ -46,10 +46,21 @@ def normalize_controller_line(raw, seq_fallback):
 
         start = to_int(d.get("start", 0), 0)
         estop = to_int(d.get("estop", 0), 0)
-        deadman = to_int(d.get("deadman", 1), 1)
+        deadman_raw = to_int(d.get("deadman", 0), 0)
 
         # Arduino code does not send manual explicitly.
         manual = to_int(d.get("manual", 0), 0)
+
+        # Final policy:
+        # - E-STOP locked: deadman must be 0
+        # - Manual mode: use Arduino deadman
+        # - Auto mode: allow motion when E-STOP is released
+        if estop == 1:
+            deadman = 0
+        elif manual == 1:
+            deadman = deadman_raw
+        else:
+            deadman = 1
 
         joy_x = to_int(d.get("joy_x", d.get("joyx", d.get("joyX", 512))), 512)
         joy_y = to_int(d.get("joy_y", d.get("joyy", d.get("joyY", 512))), 512)
