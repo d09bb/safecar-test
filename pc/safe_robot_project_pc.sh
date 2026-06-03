@@ -19,5 +19,4 @@ python3 -u safe_robot_project.py \
   --topst-port 5005 \
   --pi-ip 192.168.0.24 \
   --pi-cmd-port 5006 \
-  --controller-keepalive \
   --target-mask 4

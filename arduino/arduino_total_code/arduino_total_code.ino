@@ -160,6 +160,7 @@ void loop() {
                    " start=" + String((start_pressed && !is_estop_locked) ? 1 : 0) +
                    " estop=" + String(is_estop_locked ? 1 : 0) +
                    " deadman=" + String(deadman_out) +
+                   " manual=" + String(is_manual_mode ? 1 : 0) +
                    " target_mask=" + String(target_mask) +
                    " joyx=" + String(joyx) +
                    " joyy=" + String(joyy);
