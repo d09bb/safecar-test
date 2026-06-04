@@ -418,6 +418,12 @@ def main():
 
             drive = kv.get("drive", "STOP")
             speed = to_int(kv.get("speed", 0), 0)
+            # TURN_SPEED_BOOST_PATCH
+            # Slightly increase only left/right turning speed in AUTO and MANUAL.
+            # Forward/backward/stop speed is not changed.
+            if drive in ("TURN_LEFT", "TURN_RIGHT", "AVOID_LEFT", "AVOID_RIGHT"):
+                speed = min(100, int(speed) + 5)
+                print(f"[TURN_SPEED_BOOST] drive={drive} speed={speed}", flush=True)
             mode = kv.get("mode", "UNKNOWN")
 
             # Final speed profile for heavy vehicle.
