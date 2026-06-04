@@ -504,6 +504,14 @@ def main():
                     else:
                         speed = cruise_speed
 
+            # AUTO_TURN_SPEED_LIMIT_PATCH
+            # Reduce AUTO mode left/right turn speed only.
+            # MANUAL turn, forward, backward, and stop are unchanged.
+            AUTO_TURN_SPEED_LIMIT = 60
+            if mode != "MANUAL" and drive in ("TURN_LEFT", "TURN_RIGHT", "AVOID_LEFT", "AVOID_RIGHT"):
+                if speed > AUTO_TURN_SPEED_LIMIT:
+                    speed = AUTO_TURN_SPEED_LIMIT
+                print(f"[AUTO_TURN_SPEED_LIMIT] mode={mode} drive={drive} speed={speed}", flush=True)
             applied = apply_drive(drive, speed, mode)
 
             last_drive = applied
