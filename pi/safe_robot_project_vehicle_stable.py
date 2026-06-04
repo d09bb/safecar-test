@@ -148,22 +148,17 @@ def backward(speed):
         set_raw(name, r, speed)
 
 def turn_left(speed):
-    # 마지막에 좌회전이 맞았던 기준:
-    # left side actual forward, right side actual backward 조합
-    # 만약 다시 반대면 이 함수와 turn_right 내용을 서로 바꾸면 됨.
+    # SWAPPED: actual vehicle left turn
     set_raw("LF", "B", speed)
     set_raw("LR", "B", speed)
     set_raw("RF", "F", speed)
     set_raw("RR", "F", speed)
-
 def turn_right(speed):
+    # SWAPPED: actual vehicle right turn
     set_raw("LF", "F", speed)
     set_raw("LR", "F", speed)
     set_raw("RF", "B", speed)
     set_raw("RR", "B", speed)
-
-
-
 def now_ms():
     return int(time.time() * 1000)
 
@@ -418,12 +413,12 @@ def main():
 
             drive = kv.get("drive", "STOP")
             speed = to_int(kv.get("speed", 0), 0)
-            # TURN_SPEED_BOOST_PATCH
-            # Slightly increase only left/right turning speed in AUTO and MANUAL.
-            # Forward/backward/stop speed is not changed.
+            # EXTREME_TURN_ONLY_PWM100
+            # AUTO/MANUAL both: only left/right turn commands use max PWM 100.
+            # Forward/backward/stop are not changed.
             if drive in ("TURN_LEFT", "TURN_RIGHT", "AVOID_LEFT", "AVOID_RIGHT"):
-                speed = min(100, int(speed) + 5)
-                print(f"[TURN_SPEED_BOOST] drive={drive} speed={speed}", flush=True)
+                speed = 100
+                print(f"[EXTREME_TURN_ONLY_PWM100] mode={mode} drive={drive} speed={speed}", flush=True)
             mode = kv.get("mode", "UNKNOWN")
 
             # Final speed profile for heavy vehicle.
@@ -487,23 +482,27 @@ def main():
                 servo_last_mode = mode
             else:
                 update_servo_by_mode(mode, steer=steer, servo_cmd=servo_cmd)
-            # Final safe kick-start speed override.
-            # Low cruise speed is kept for safety, but one-cycle kick breaks static friction.
+            # FINAL_TURN_DIRECTION_SPEED_FIX
+            # Forward/backward keep the previous safe cruise policy.
+            # Only left/right tank turn commands are forced to max PWM 100.
+            turn_cmd = drive in ("TURN_LEFT", "TURN_RIGHT", "AVOID_LEFT", "AVOID_RIGHT")
+
             if drive == "STOP" or speed <= 0:
                 speed = 0
             else:
-                if mode == "MANUAL":
-                    if drive in ("TURN_LEFT", "TURN_RIGHT", "AVOID_LEFT", "AVOID_RIGHT"):
-                        cruise_speed = FINAL_MANUAL_TURN_SPEED
-                    else:
+                if turn_cmd:
+                    speed = 100
+                    print(f"[FINAL_TURN_PWM100] mode={mode} drive={drive} speed={speed}", flush=True)
+                else:
+                    if mode == "MANUAL":
                         cruise_speed = FINAL_MANUAL_STRAIGHT_SPEED
-                else:
-                    cruise_speed = FINAL_AUTO_CRUISE_SPEED
-            
-                if last_drive == "STOP" or drive != last_drive:
-                    speed = FINAL_SAFE_KICK_PWM
-                else:
-                    speed = cruise_speed
+                    else:
+                        cruise_speed = FINAL_AUTO_CRUISE_SPEED
+
+                    if last_drive == "STOP" or drive != last_drive:
+                        speed = FINAL_SAFE_KICK_PWM
+                    else:
+                        speed = cruise_speed
 
             applied = apply_drive(drive, speed, mode)
 
