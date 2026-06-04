@@ -6,6 +6,34 @@ import RPi.GPIO as GPIO
 # Camera pan servo config
 SERVO_PIN = 17
 SERVO_CENTER = 40
+
+# Final safe speed policy for heavy vehicle.
+# Use a short kick only when starting/changing direction,
+# then keep low cruise speed for safety.
+FINAL_SAFE_KICK_PWM = 70
+FINAL_AUTO_CRUISE_SPEED = 30
+FINAL_MANUAL_STRAIGHT_SPEED = 35
+FINAL_MANUAL_TURN_SPEED = 30
+
+# Final drive speed tuning for heavy vehicle.
+# Low PWM cannot overcome static friction, so every moving command has a minimum PWM.
+FINAL_AUTO_GAIN = 1.20
+FINAL_AUTO_MAX = 65
+FINAL_AUTO_MIN_MOVE = 56
+
+FINAL_MANUAL_STRAIGHT_GAIN = 1.45
+FINAL_MANUAL_STRAIGHT_MAX = 85
+FINAL_MANUAL_STRAIGHT_MIN_MOVE = 62
+
+FINAL_MANUAL_TURN_GAIN = 1.15
+FINAL_MANUAL_TURN_MAX = 65
+FINAL_MANUAL_TURN_MIN_MOVE = 58
+
+# One-cycle kick when starting or changing direction.
+FINAL_START_BOOST = 75
+
+
+
 SERVO_LEFT = 0
 SERVO_RIGHT = 150
 
@@ -183,6 +211,16 @@ def update_servo_by_mode(mode, steer="CENTER", servo_cmd=None):
 
     t = now_ms()
 
+    if mode == "MANUAL":
+        # Manual mode: do not move camera servo.
+        # Joystick should control only vehicle drive, not camera pan.
+        servo_lock_until_ms = 0
+        servo_freeze_until_ms = 0
+        servo_search_start_ms = 0
+        servo_scan_last_step_ms = 0
+        servo_last_mode = "MANUAL"
+        return
+
     if mode == "GO_TO_TARGET":
         # Use TOPST CMD steer as the primary target-side memory.
         # Servo convention: LEFT=0, CENTER=40, RIGHT=150.
@@ -321,7 +359,7 @@ def to_int(v, default=0):
     except Exception:
         return default
 
-def apply_drive(drive, speed):
+def apply_drive(drive, speed, mode="UNKNOWN"):
     if drive == "FORWARD":
         forward(speed)
         return "FORWARD"
@@ -381,13 +419,87 @@ def main():
             drive = kv.get("drive", "STOP")
             speed = to_int(kv.get("speed", 0), 0)
             mode = kv.get("mode", "UNKNOWN")
+
+            # Final speed profile for heavy vehicle.
+            # STOP remains STOP. Moving commands get minimum PWM and one-cycle start boost.
+            if drive != "STOP" and speed > 0:
+                if mode == "MANUAL":
+                    if drive in ("TURN_LEFT", "TURN_RIGHT", "AVOID_LEFT", "AVOID_RIGHT"):
+                        speed = int(speed * FINAL_MANUAL_TURN_GAIN)
+                        if speed < FINAL_MANUAL_TURN_MIN_MOVE:
+                            speed = FINAL_MANUAL_TURN_MIN_MOVE
+                        if speed > FINAL_MANUAL_TURN_MAX:
+                            speed = FINAL_MANUAL_TURN_MAX
+                    else:
+                        speed = int(speed * FINAL_MANUAL_STRAIGHT_GAIN)
+                        if speed < FINAL_MANUAL_STRAIGHT_MIN_MOVE:
+                            speed = FINAL_MANUAL_STRAIGHT_MIN_MOVE
+                        if speed > FINAL_MANUAL_STRAIGHT_MAX:
+                            speed = FINAL_MANUAL_STRAIGHT_MAX
+                else:
+                    speed = int(speed * FINAL_AUTO_GAIN)
+                    if speed < FINAL_AUTO_MIN_MOVE:
+                        speed = FINAL_AUTO_MIN_MOVE
+                    if speed > FINAL_AUTO_MAX:
+                        speed = FINAL_AUTO_MAX
+
+                if last_drive == "STOP" or drive != last_drive:
+                    if speed < FINAL_START_BOOST:
+                        speed = FINAL_START_BOOST
             fault = kv.get("fault", "NONE")
             steer = kv.get("steer", "CENTER")
             servo_cmd = to_int(kv.get("servo", -1), -1)
 
             last_cmd_time = now
-            update_servo_by_mode(mode, steer=steer, servo_cmd=servo_cmd)
-            applied = apply_drive(drive, speed)
+            # SERVO_STOP_STATE_GUARD
+            # Servo must be fixed only in:
+            # - E-STOP / SAFETY_STOP
+            # - MANUAL mode
+            # - FINISH / COMPLETION after all targets are visited
+            #
+            # Important:
+            # SEARCH_TARGET must be allowed to scan.
+            # Therefore, do NOT stop servo only because drive=STOP or speed=0.
+            stop_servo_modes = (
+                "SAFETY_STOP",
+                "MANUAL",
+                "FINISH",
+                "COMPLETION",
+            )
+
+            if mode in stop_servo_modes:
+                if current_servo_angle != SERVO_CENTER:
+                    set_servo_angle(SERVO_CENTER, force=True)
+                    print(f"[SERVO_FIXED_MODE_CENTER] mode={mode} angle={SERVO_CENTER}", flush=True)
+                else:
+                    if servo_pwm is not None:
+                        servo_pwm.ChangeDutyCycle(0)
+
+                servo_search_start_ms = 0
+                servo_scan_last_step_ms = 0
+                servo_scan_angle = SERVO_CENTER
+                servo_last_mode = mode
+            else:
+                update_servo_by_mode(mode, steer=steer, servo_cmd=servo_cmd)
+            # Final safe kick-start speed override.
+            # Low cruise speed is kept for safety, but one-cycle kick breaks static friction.
+            if drive == "STOP" or speed <= 0:
+                speed = 0
+            else:
+                if mode == "MANUAL":
+                    if drive in ("TURN_LEFT", "TURN_RIGHT", "AVOID_LEFT", "AVOID_RIGHT"):
+                        cruise_speed = FINAL_MANUAL_TURN_SPEED
+                    else:
+                        cruise_speed = FINAL_MANUAL_STRAIGHT_SPEED
+                else:
+                    cruise_speed = FINAL_AUTO_CRUISE_SPEED
+            
+                if last_drive == "STOP" or drive != last_drive:
+                    speed = FINAL_SAFE_KICK_PWM
+                else:
+                    speed = cruise_speed
+
+            applied = apply_drive(drive, speed, mode)
 
             last_drive = applied
             last_speed = speed if applied != "STOP" else 0
