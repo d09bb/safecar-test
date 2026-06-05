@@ -1,0 +1,25 @@
+#!/bin/sh
+
+# TOPST <-> PC network
+export TOPST_IP=${TOPST_IP:-192.168.50.20}
+export PC_TOPST_IP=${PC_TOPST_IP:-192.168.50.10}
+
+# Ports
+export TOPST_PORT=${TOPST_PORT:-5005}
+export CMD_PORT=${CMD_PORT:-5006}
+
+# Valid ArUco target IDs are only 0,1,2.
+export TARGETS=${TARGETS:-0,1,2}
+
+# TOPST control parameters
+export TOPST_SEND_HZ=${TOPST_SEND_HZ:-10}
+export TOPST_TTL_MS=${TOPST_TTL_MS:-2000}
+export TOPST_CENTER=${TOPST_CENTER:-320}
+export TOPST_DEADBAND=${TOPST_DEADBAND:-10}
+export TOPST_SPEED=${TOPST_SPEED:-40}
+
+# Tune after checking actual marker area.
+export TOPST_REACH_AREA=${TOPST_REACH_AREA:-30000}
+export TOPST_REACH_COUNT=${TOPST_REACH_COUNT:-3}
+export TOPST_PERCEPTION_TIMEOUT_MS=${TOPST_PERCEPTION_TIMEOUT_MS:-2000}
+export TOPST_TARGET_LOST_HOLD_MS=${TOPST_TARGET_LOST_HOLD_MS:-1200}

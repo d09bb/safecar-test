@@ -5,7 +5,7 @@ import RPi.GPIO as GPIO
 
 # Camera pan servo config
 SERVO_PIN = 17
-SERVO_CENTER = 40
+SERVO_CENTER = 90
 
 # Final safe speed policy for heavy vehicle.
 # Use a short kick only when starting/changing direction,
@@ -34,13 +34,17 @@ FINAL_START_BOOST = 75
 
 
 
-SERVO_LEFT = 0
-SERVO_RIGHT = 150
+SERVO_LEFT = 150
+SERVO_RIGHT = 20
 
 # 5-degree smooth scan
 SERVO_SCAN_STEP = 5
 SERVO_SCAN_INTERVAL_MS = 150
 SERVO_SCAN_START_DELAY_MS = 800
+
+# Physical scan limits. SERVO_LEFT may be larger than SERVO_RIGHT.
+SERVO_SCAN_MIN = min(SERVO_LEFT, SERVO_RIGHT)
+SERVO_SCAN_MAX = max(SERVO_LEFT, SERVO_RIGHT)
 
 # Camera pan servo
 
@@ -90,6 +94,7 @@ servo_freeze_until_ms = 0
 servo_lock_until_ms = 0
 last_target_servo_angle = SERVO_CENTER
 last_target_scan_dir = 1
+last_search_target = -1
 servo_last_mode = "INIT"
 servo_freeze_until_ms = 0
 
@@ -114,7 +119,7 @@ def setup():
 
     stop_all()
     set_servo_angle(SERVO_CENTER, force=True)
-    print("[VEHICLE_STABLE] GPIO initialized from motor_test style, servo center=40", flush=True)
+    print("[VEHICLE_STABLE] GPIO initialized from motor_test style, servo center=90", flush=True)
 
 def set_raw(name, raw_dir, speed):
     in1, in2, pwm_pin = MOTORS[name]
@@ -159,6 +164,33 @@ def turn_right(speed):
     set_raw("LR", "F", speed)
     set_raw("RF", "B", speed)
     set_raw("RR", "B", speed)
+
+def spin_vehicle(direction, duration=0.30):
+    """
+    Rough body spin before symmetric servo scan.
+    Keep duration short for safety. Tune later after floor test.
+    """
+    print(f"[VEHICLE_SPIN] direction={direction} duration={duration}", flush=True)
+
+    if direction == "LEFT":
+        turn_left(FINAL_START_BOOST)
+    elif direction == "RIGHT":
+        turn_right(FINAL_START_BOOST)
+    else:
+        stop_all()
+        return
+
+    time.sleep(0.10)
+
+    if direction == "LEFT":
+        turn_left(FINAL_MANUAL_TURN_SPEED)
+    elif direction == "RIGHT":
+        turn_right(FINAL_MANUAL_TURN_SPEED)
+
+    time.sleep(max(0.0, duration - 0.10))
+    stop_all()
+    print("[VEHICLE_SPIN] done -> STOP", flush=True)
+
 def now_ms():
     return int(time.time() * 1000)
 
@@ -222,16 +254,15 @@ def update_servo_by_mode(mode, steer="CENTER", servo_cmd=None):
         # scan_dir +1 increases angle toward RIGHT, -1 decreases toward LEFT.
         _steer = str(steer or "CENTER").upper()
 
-        # Physical servo direction is reversed on this vehicle.
-        # Logical RIGHT from TOPST must move to the physical right angle,
-        # which corresponds to SERVO_LEFT value in the current hardware.
-        # Logical LEFT from TOPST must move to the physical left angle,
-        # which corresponds to SERVO_RIGHT value in the current hardware.
+        # Physical servo calibration:
+        # RIGHT = 20, CENTER = 90, LEFT = 150.
+        # Increasing angle scans toward LEFT.
+        # Decreasing angle scans toward RIGHT.
         if _steer == "RIGHT":
-            last_target_servo_angle = SERVO_LEFT
+            last_target_servo_angle = SERVO_RIGHT
             last_target_scan_dir = -1
         elif _steer == "LEFT":
-            last_target_servo_angle = SERVO_RIGHT
+            last_target_servo_angle = SERVO_LEFT
             last_target_scan_dir = 1
         elif _steer == "CENTER":
             last_target_servo_angle = SERVO_CENTER
@@ -301,12 +332,12 @@ def update_servo_by_mode(mode, steer="CENTER", servo_cmd=None):
         if (t - servo_scan_last_step_ms) >= SERVO_SCAN_INTERVAL_MS:
             servo_scan_angle += servo_scan_dir * SERVO_SCAN_STEP
 
-            if servo_scan_angle >= SERVO_RIGHT:
-                servo_scan_angle = SERVO_RIGHT
+            if servo_scan_angle >= SERVO_SCAN_MAX:
+                servo_scan_angle = SERVO_SCAN_MAX
                 servo_scan_dir = -1
 
-            elif servo_scan_angle <= SERVO_LEFT:
-                servo_scan_angle = SERVO_LEFT
+            elif servo_scan_angle <= SERVO_SCAN_MIN:
+                servo_scan_angle = SERVO_SCAN_MIN
                 servo_scan_dir = 1
 
             servo_scan_last_step_ms = t
@@ -372,6 +403,7 @@ def apply_drive(drive, speed, mode="UNKNOWN"):
         return "STOP"
 
 def main():
+    global last_search_target, last_target_servo_angle, servo_last_mode
     listen_port = 5006
     timeout_ms = 3000
 
@@ -413,13 +445,33 @@ def main():
 
             drive = kv.get("drive", "STOP")
             speed = to_int(kv.get("speed", 0), 0)
+            mode = kv.get("mode", "UNKNOWN")
+
+            target_id = to_int(kv.get("target", -1), -1)
+            search_dir = str(kv.get("dir", "CENTER")).upper()
+
+            # Mapping-based rough search:
+            # When TOPST enters SEARCH_TARGET for a new target, spin the body once,
+            # then let the servo scan symmetrically from SERVO_CENTER.
+            if mode == "SEARCH_TARGET":
+                if target_id != last_search_target and target_id in (0, 1, 2):
+                    if search_dir == "LEFT":
+                        spin_vehicle("LEFT", 0.30)
+                    elif search_dir == "RIGHT":
+                        spin_vehicle("RIGHT", 0.30)
+
+                    last_search_target = target_id
+                    last_target_servo_angle = SERVO_CENTER
+                    servo_last_mode = "INIT"
+            else:
+                last_search_target = -1
+
             # EXTREME_TURN_ONLY_PWM100
             # AUTO/MANUAL both: only left/right turn commands use max PWM 100.
             # Forward/backward/stop are not changed.
             if drive in ("TURN_LEFT", "TURN_RIGHT", "AVOID_LEFT", "AVOID_RIGHT"):
                 speed = 100
                 print(f"[EXTREME_TURN_ONLY_PWM100] mode={mode} drive={drive} speed={speed}", flush=True)
-            mode = kv.get("mode", "UNKNOWN")
 
             # Final speed profile for heavy vehicle.
             # STOP remains STOP. Moving commands get minimum PWM and one-cycle start boost.
