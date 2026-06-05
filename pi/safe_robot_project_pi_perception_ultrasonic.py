@@ -245,7 +245,8 @@ def main():
         tx.sendto(out.encode(), (PC_IP, PC_PORT))
 
         print(
-            f"[PI_ULTRA_RELAY TX] id={d.get('id')} cx={d.get('cx')} "
+            f"[PI_ULTRA_RELAY TX] aruco={d.get('aruco')} id={d.get('id')} "
+            f"cx={d.get('cx')} area={d.get('area')} "
             f"dist={d.get('dist_mm')} state={d.get('tof_state')} "
             f"obstacle={d.get('obstacle')} fault={d.get('fault')}",
             flush=True,
