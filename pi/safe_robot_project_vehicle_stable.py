@@ -350,7 +350,16 @@ def update_servo_by_mode(mode, steer="CENTER", servo_cmd=None):
 
         return
 
-    if mode in ("SAFETY_STOP", "LOCAL_SAFETY_STOP", "FINISH", "TARGET_REACHED"):
+    if mode in (
+        "IDLE",
+        "WAIT_START",
+        "OBSTACLE_HOLD",
+        "ARRIVAL_HOLD",
+        "SAFETY_STOP",
+        "LOCAL_SAFETY_STOP",
+        "FINISH",
+        "TARGET_REACHED",
+    ):
         servo_lock_until_ms = 0
         servo_freeze_until_ms = 0
         servo_search_start_ms = 0

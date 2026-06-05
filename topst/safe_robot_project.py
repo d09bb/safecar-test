@@ -326,8 +326,13 @@ class SafeTopstState:
 
         self.started = False
         self.target_locked = False
-        self.target_list = list(targets)
-        self.default_targets = list(targets)
+        # Fixed route policy:
+        # The vehicle always goes START -> 0 -> 1 -> 2.
+        # User target_mask means "work/hold point", not route list.
+        self.route_list = [0, 1, 2]
+        self.hold_targets = set()
+        self.target_list = list(self.route_list)
+        self.default_targets = list(self.route_list)
         self.visited = set()
         self.current_target = -1
         self.final_target = -1  # ID4 disabled. Valid ArUco IDs are 0,1,2 only.
@@ -353,52 +358,67 @@ class SafeTopstState:
         self.last_target_area = 0
 
     def targets_from_mask(self, mask):
-        # Canonical target mask mapping:
-        #   mask bit 0 / value 1 -> target 0
-        #   mask bit 1 / value 2 -> target 1
-        #   mask bit 2 / value 4 -> target 2
-        out = []
+        """
+        Fixed route policy.
+
+        Route is always:
+          START -> 0 -> 1 -> 2
+
+        target_mask means selected 5-second hold point:
+          bit0 / mask 1 -> hold at 0
+          bit1 / mask 2 -> hold at 1
+          bit2 / mask 4 -> final route to 2. Reaching 2 always means FINISH.
+
+        Examples:
+          mask=1 -> route=[0,1,2], hold_targets={0}
+          mask=2 -> route=[0,1,2], hold_targets={1}
+          mask=3 -> route=[0,1,2], hold_targets={0,1}
+          mask=4 -> route=[0,1,2], hold_targets=set()
+        """
         mask = safe_int(mask, 0)
+        hold = []
 
         if mask & 1:
-            out.append(0)
+            hold.append(0)
         if mask & 2:
-            out.append(1)
-        if mask & 4:
-            out.append(2)
+            hold.append(1)
 
-        return out
+        # ID2 is always the final destination.
+        # It is not a hold waypoint; reaching ID2 completes the mission.
+        return hold
 
     def start_and_lock(self):
-        # If all selected targets are already visited, never restart automatically.
-        # Arduino keeps sending start=1, so FINISH must be latched in TOPST.
+        # If all route points are complete, do not restart automatically.
+        # Arduino may keep sending start=1, so FINISH must be latched.
         if self.finished:
             self.started = False
             self.current_target = -1
-            print("[SAFE_TOPST FINISH_LOCKED] ignore START after all targets complete", flush=True)
+            print("[SAFE_TOPST FINISH_LOCKED] ignore START after route complete", flush=True)
             return
 
         # If mission is already locked, START means resume.
         if self.target_locked and self.current_target in (0, 1, 2):
             self.started = True
-            print(f"[SAFE_TOPST RESUME] target_list={self.target_list}, current_target={self.current_target}, visited={self.visited}", flush=True)
+            print(
+                f"[SAFE_TOPST RESUME] route={self.target_list}, "
+                f"hold_targets={sorted(getattr(self, 'hold_targets', set()))}, "
+                f"current_target={self.current_target}, visited={self.visited}",
+                flush=True
+            )
             return
 
         mask = safe_int(self.latest_c.get("target_mask", 0), 0)
-        selected = self.targets_from_mask(mask)
-        selected = [t for t in selected if t in (0, 1, 2)]
 
-        if not selected:
-            self.started = False
-            self.target_locked = False
-            self.current_target = -1
-            print(f"[SAFE_TOPST WAIT_TARGET] mask={mask}, no target selected", flush=True)
-            return
+        # Fixed route:
+        # Always visit 0 -> 1 -> 2.
+        # mask only decides which intermediate point holds for 5 seconds.
+        self.route_list = [0, 1, 2]
+        self.target_list = [0, 1, 2]
+        self.default_targets = [0, 1, 2]
+        self.hold_targets = set(self.targets_from_mask(mask))
 
-        self.target_list = list(selected)
-        self.default_targets = list(selected)
         self.visited = set()
-        self.current_target = self.target_list[0]
+        self.current_target = 0
         self.target_locked = True
         self.started = True
         self.finished = False
@@ -407,8 +427,14 @@ class SafeTopstState:
         self.last_target_seen_ms = 0
         self.arrival_hold_until_ms = 0
         self.arrival_hold_target = -1
+        self.pending_target = -1
+        self.last_reached = -1
 
-        print(f"[SAFE_TOPST LOCK] mask={mask}, target_list={self.target_list}, current_target={self.current_target}", flush=True)
+        print(
+            f"[SAFE_TOPST LOCK] mask={mask}, route={self.target_list}, "
+            f"hold_targets={sorted(self.hold_targets)}, current_target={self.current_target}",
+            flush=True
+        )
 
     def select_next_target(self):
         # Reset transient states when switching target.
@@ -430,15 +456,18 @@ class SafeTopstState:
             self.going_final = False
             self.finished = False
             self.started = True
-            print(f"[SAFE_TOPST NEXT] current_target={self.current_target}, visited={sorted(self.visited)}", flush=True)
+            print(
+                f"[SAFE_TOPST NEXT] current_target={self.current_target}, "
+                f"visited={sorted(self.visited)}, hold_targets={sorted(getattr(self, 'hold_targets', set()))}",
+                flush=True
+            )
         else:
-            # No final marker ID4. Mission ends after all selected targets 0,1,2 are visited.
             self.current_target = -1
             self.going_final = False
             self.finished = True
             self.started = False
             self.target_locked = True
-            print("[SAFE_TOPST FINISH] all selected targets visited", flush=True)
+            print("[SAFE_TOPST FINISH] route complete", flush=True)
 
 def make_cmd(seq, ttl, mode, target, drive, speed, steer="CENTER", servo=90, buzzer="OFF", fault="NONE", search_dir="CENTER"):
     stop_modes = (
@@ -553,7 +582,14 @@ def role_topst(args):
                 state.last_p_time = now
                 print(f"[SAFE_TOPST P_RX] {state.latest_p}", flush=True)
 
-            elif msg_type == "CONTROLLER":
+            elif msg_type in ("CONTROLLER", "CTRL"):
+                # Arduino compatibility:
+                # Accept both joy_x/joy_y and legacy joyx/joyy field names.
+                if "joyx" in kv and "joy_x" not in kv:
+                    kv["joy_x"] = kv["joyx"]
+                if "joyy" in kv and "joy_y" not in kv:
+                    kv["joy_y"] = kv["joyy"]
+
                 for k in state.latest_c:
                     if k in kv:
                         state.latest_c[k] = safe_int(kv[k], state.latest_c[k])
@@ -597,6 +633,12 @@ def role_topst(args):
         # Vehicle and camera servo must remain stopped/centered.
         start = safe_int(c.get("start", 0), 0)
         if start == 0:
+            state.started = False
+            state.current_target = -1
+            state.reached_count = 0
+            state.last_target_seen_ms = 0
+            state.arrival_hold_until_ms = 0
+
             mode = "WAIT_START"
             drive = "STOP"
             speed = 0
@@ -657,7 +699,16 @@ def role_topst(args):
         search_dir = "CENTER"
         servo = 90
 
-        if not state.started:
+        if state.finished:
+            mode = "FINISH"
+            drive = "STOP"
+            speed = 0
+            steer = "CENTER"
+            servo = 90
+            buzzer = "OFF"
+            fault_text = "MISSION_COMPLETE"
+
+        elif not state.started:
             mode = "IDLE"
             fault_text = "WAIT_START"
 
@@ -862,20 +913,14 @@ def role_topst(args):
                 _reached = state.current_target
                 state.visited.add(_reached)
                 _remaining = [t for t in state.target_list if t not in state.visited]
-                print(f"[TARGET_REACHED] reached={_reached} remaining={_remaining}", flush=True)
+                print(
+                    f"[TARGET_REACHED] reached={_reached} remaining={_remaining} "
+                    f"hold_targets={sorted(getattr(state, 'hold_targets', set()))}",
+                    flush=True
+                )
 
-                if _remaining:
-                    state.pending_target = _remaining[0]
-                    state.arrival_hold_until_ms = now + 3000
-                    mode = "ARRIVAL_HOLD"
-                    target = _reached
-                    drive = "STOP"
-                    speed = 0
-                    steer = "CENTER"
-                    servo = 90
-                    buzzer = "GOAL"
-                    fault_text = "ARRIVAL_HOLD"
-                else:
+                if not _remaining:
+                    # ID2 reached. Mission complete.
                     state.pending_target = -1
                     state.arrival_hold_until_ms = 0
                     state.current_target = -1
@@ -889,6 +934,39 @@ def role_topst(args):
                     servo = 90
                     buzzer = "OFF"
                     fault_text = "MISSION_COMPLETE"
+
+                elif _reached in getattr(state, "hold_targets", set()):
+                    # User-selected work point. Stop for 5 seconds.
+                    state.pending_target = _remaining[0]
+                    state.arrival_hold_until_ms = now + 5000
+                    state.arrival_hold_target = _reached
+                    mode = "ARRIVAL_HOLD"
+                    target = _reached
+                    drive = "STOP"
+                    speed = 0
+                    steer = "CENTER"
+                    servo = 90
+                    buzzer = "GOAL"
+                    fault_text = "ARRIVAL_HOLD"
+
+                else:
+                    # Transit waypoint. Do not wait. Immediately search next target.
+                    state.current_target = _remaining[0]
+                    state.pending_target = -1
+                    state.arrival_hold_until_ms = 0
+                    state.arrival_hold_target = -1
+                    state.reached_count = 0
+                    state.last_target_seen_ms = 0
+                    state.last_reached = _reached
+                    mode = "SEARCH_TARGET"
+                    target = state.current_target
+                    drive = "STOP"
+                    speed = 0
+                    steer = "CENTER"
+                    servo = 90
+                    buzzer = "OFF"
+                    fault_text = "NEXT_TARGET"
+                    print(f"[TRANSIT_NEXT] reached={_reached} next_target={state.current_target}", flush=True)
             else:
                 mode = "GO_TO_TARGET"
                 drive, speed, steer = decide_follow(cx, args.center, args.deadband, args.speed)
