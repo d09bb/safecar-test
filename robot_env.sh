@@ -26,3 +26,11 @@ export CMD_PORT=${CMD_PORT:-5006}
 # bit0=ID0, bit1=ID1, bit2=ID2
 # 7 means 0,1,2 all selected.
 export TARGET_MASK=${TARGET_MASK:-7}
+
+# ArUco distance / stability tuning
+export MIN_ARUCO_AREA=${MIN_ARUCO_AREA:-3000}
+export ARUCO_STABLE_COUNT=${ARUCO_STABLE_COUNT:-5}
+
+# Ultrasonic obstacle threshold
+# 130mm = 13cm
+export ULTRA_OBSTACLE_MM=${ULTRA_OBSTACLE_MM:-130}

@@ -338,7 +338,7 @@ void loop() {
   // ------------------------------------------------------------
   int target_mask = makeTargetMask();
 
-  String payload = "CTRL seq=" + String(seq++) +
+  String payload = "CONTROLLER seq=" + String(seq++) +
                    " start=" + String(start_latched ? 1 : 0) +
                    " estop=" + String(estop_latched ? 1 : 0) +
                    " deadman=" + String(deadman_out) +
