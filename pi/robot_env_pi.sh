@@ -25,7 +25,6 @@ export ULTRASONIC_TRIG=${ULTRASONIC_TRIG:-22}
 export ULTRASONIC_ECHO=${ULTRASONIC_ECHO:-25}
 
 # Ultrasonic threshold
-export ULTRA_OBSTACLE_MM=${ULTRA_OBSTACLE_MM:-230}
 export ULTRA_STALE_MS=${ULTRA_STALE_MS:-500}
 
 # ArUco distance / stability tuning
@@ -34,4 +33,7 @@ export ARUCO_STABLE_COUNT=${ARUCO_STABLE_COUNT:-5}
 
 # Ultrasonic obstacle threshold
 # 130mm = 13cm
-export ULTRA_OBSTACLE_MM=${ULTRA_OBSTACLE_MM:-130}
+
+# Ultrasonic obstacle threshold
+# 130mm = 13cm
+export ULTRA_OBSTACLE_MM=130
