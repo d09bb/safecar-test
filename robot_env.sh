@@ -11,7 +11,7 @@ export TOPST_IP=${TOPST_IP:-192.168.50.20}
 
 # PC <-> Raspberry Pi Wi-Fi network
 # Raspberry Pi wlan0 IP
-export PI_IP=${PI_IP:-192.168.0.24}
+export PI_IP=${PI_IP:-192.168.0.10}
 
 # PC Wi-Fi IP
 # Raspberry Pi ultrasonic/perception relay sends PERCEPTION to this IP.
