@@ -31,6 +31,9 @@ dist_buf = deque(maxlen=5)
 # A marker ID is accepted only after the same ID appears repeatedly.
 ARUCO_STABLE_COUNT = int(os.environ.get("ARUCO_STABLE_COUNT", "3"))
 MIN_ARUCO_AREA = int(os.environ.get("MIN_ARUCO_AREA", "8000"))
+MIN_ARUCO_AREA_ID0 = int(os.environ.get("MIN_ARUCO_AREA_ID0", "1200"))
+MIN_ARUCO_AREA_ID1 = int(os.environ.get("MIN_ARUCO_AREA_ID1", "1800"))
+MIN_ARUCO_AREA_ID2 = int(os.environ.get("MIN_ARUCO_AREA_ID2", "2500"))
 aruco_candidate_id = -1
 aruco_candidate_count = 0
 
@@ -144,7 +147,16 @@ def normalize_aruco(d):
     cx = to_int(d.get("cx", 320), 320)
 
     # Final rule: valid ArUco IDs are only 0, 1, 2.
-    valid_now = (aruco == 1 and marker_id in (0, 1, 2) and area >= MIN_ARUCO_AREA)
+    # Use ID-specific area thresholds:
+    # - ID 0 is the first target and should be easier to acquire.
+    # - ID 2 has shown false positives, so keep it stricter.
+    area_min_by_id = {
+        0: MIN_ARUCO_AREA_ID0,
+        1: MIN_ARUCO_AREA_ID1,
+        2: MIN_ARUCO_AREA_ID2,
+    }
+    required_area = area_min_by_id.get(marker_id, MIN_ARUCO_AREA)
+    valid_now = (aruco == 1 and marker_id in (0, 1, 2) and area >= required_area)
 
     if not valid_now:
         aruco_candidate_id = -1

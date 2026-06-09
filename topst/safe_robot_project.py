@@ -494,14 +494,12 @@ def make_cmd(seq, ttl, mode, target, drive, speed, steer="CENTER", servo=90, buz
 
 def decide_follow(cx, center=320, deadband=10, speed=40, area=0):
     """
-    Area-based ArUco tracking.
+    Demo-stable ArUco tracking.
 
-    Far marker:
-      - react normally to x-axis error.
-
-    Close marker:
-      - widen forward band so the vehicle does not over-rotate.
-      - only turn if the marker is extremely off-center.
+    Goal:
+      - Avoid left/right oscillation.
+      - Prefer forward motion once the marker is visible.
+      - Turn only when the marker is clearly far from the center.
     """
     try:
         cx = int(cx)
@@ -516,21 +514,27 @@ def decide_follow(cx, center=320, deadband=10, speed=40, area=0):
     center = int(center)
     error = cx - center
 
-    # Base speed policy. Pi vehicle code will apply its own final PWM limits.
     AUTO_FORWARD_SPEED = 30
-    AUTO_TURN_SPEED = 60
+    AUTO_TURN_SPEED = 70
 
-    # The closer the marker is, the wider the forward band becomes.
-    if area >= 85000:
-        forward_band = 260
-    elif area >= 60000:
-        forward_band = 220
+    # Forward-priority bands.
+    # If the marker is visible, do not keep rotating for small cx noise.
+    if area >= 60000:
+        turn_band = 180
     elif area >= 30000:
-        forward_band = 180
+        turn_band = 150
+    elif area >= 15000:
+        turn_band = 120
     else:
-        forward_band = 140
+        turn_band = 90
 
-    if abs(error) <= forward_band:
+    print(
+        f"[FOLLOW_DEBUG] cx={cx} center={center} error={error} "
+        f"area={area} turn_band={turn_band}",
+        flush=True,
+    )
+
+    if abs(error) <= turn_band:
         return "FORWARD", AUTO_FORWARD_SPEED, "CENTER"
 
     if error < 0:

@@ -72,7 +72,7 @@ sudo python3 -u safe_robot_project_pi_frame_stable.py \
   --aig-port "${AIG_FRAME_PORT}" \
   --dev /dev/video0 \
   --width 640 \
-  --height 480 \
+  --height 360 \
   --fps 8 \
   > /tmp/safe_robot_project_pi_frame.log 2>&1 &
 

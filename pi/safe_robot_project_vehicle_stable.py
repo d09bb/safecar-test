@@ -35,8 +35,8 @@ FINAL_START_BOOST = 75
 # Auto mode servo-body alignment.
 # If the camera sees the marker far from the vehicle center direction,
 # rotate the vehicle first while slowly returning the camera to center.
-AUTO_SERVO_ALIGN_DEADBAND_DEG = 12
-AUTO_SERVO_ALIGN_STEP_DEG = 3
+AUTO_SERVO_ALIGN_DEADBAND_DEG = 25
+AUTO_SERVO_ALIGN_STEP_DEG = 8
 AUTO_SERVO_ALIGN_MIN_SPEED = 35
 
 
@@ -516,9 +516,9 @@ def main():
             if mode == "SEARCH_TARGET":
                 if target_id != last_search_target and target_id in (0, 1, 2):
                     if search_dir == "LEFT":
-                        spin_vehicle("LEFT", 0.30)
+                        spin_vehicle("LEFT", 0.15)
                     elif search_dir == "RIGHT":
-                        spin_vehicle("RIGHT", 0.30)
+                        spin_vehicle("RIGHT", 0.15)
 
                     last_search_target = target_id
                     last_target_servo_angle = SERVO_CENTER
@@ -598,10 +598,11 @@ def main():
             else:
                 update_servo_by_mode(mode, steer=steer, servo_cmd=servo_cmd)
 
-            # AUTO_SERVO_BODY_ALIGN
-            # In AUTO tracking, do not blindly drive forward while the camera is off-center.
-            # Rotate the vehicle toward the marker until the camera comes back near SERVO_CENTER.
-            drive, speed = apply_auto_servo_alignment(mode, drive, speed)
+            # AUTO_SERVO_BODY_ALIGN disabled for demo stability.
+            # Reason:
+            # TOPST already decides TURN_LEFT/RIGHT from ArUco cx.
+            # Servo-angle override can rotate opposite to the actual marker direction.
+            # drive, speed = apply_auto_servo_alignment(mode, drive, speed)
 
             # FINAL_TURN_DIRECTION_SPEED_FIX
             # Forward/backward keep the previous safe cruise policy.
