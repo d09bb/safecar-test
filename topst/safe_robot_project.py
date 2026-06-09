@@ -505,12 +505,12 @@ def make_cmd(seq, ttl, mode, target, drive, speed, steer="CENTER", servo=90, buz
 
 def decide_follow(cx, center=320, deadband=10, speed=40, area=0):
     """
-    Demo-stable ArUco tracking.
+    Reduced-turn ArUco tracking.
 
     Goal:
-      - Avoid left/right oscillation.
-      - Prefer forward motion once the marker is visible.
-      - Turn only when the marker is clearly far from the center.
+      - Do not rotate aggressively when ArUco is only slightly left/right.
+      - Move forward unless the marker is near the image edge.
+      - Use smaller turn speed to reduce body rotation angle.
     """
     try:
         cx = int(cx)
@@ -525,19 +525,17 @@ def decide_follow(cx, center=320, deadband=10, speed=40, area=0):
     center = int(center)
     error = cx - center
 
-    AUTO_FORWARD_SPEED = 30
-    AUTO_TURN_SPEED = 70
+    AUTO_FORWARD_SPEED = 35
+    AUTO_TURN_SPEED = 65
 
-    # Forward-priority bands.
-    # If the marker is visible, do not keep rotating for small cx noise.
-    if area >= 60000:
-        turn_band = 180
-    elif area >= 30000:
-        turn_band = 150
-    elif area >= 15000:
-        turn_band = 120
+    # Wider band = less turning.
+    # Only extreme left/right marker position becomes TURN.
+    if area >= 50000:
+        turn_band = 260
+    elif area >= 25000:
+        turn_band = 230
     else:
-        turn_band = 90
+        turn_band = 200
 
     print(
         f"[FOLLOW_DEBUG] cx={cx} center={center} error={error} "
