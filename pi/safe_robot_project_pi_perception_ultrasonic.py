@@ -231,7 +231,21 @@ def main():
             print(f"[PI_ULTRA_RELAY IGNORE] {addr} {line}", flush=True)
             continue
 
+        raw_aruco = d.get("aruco")
+        raw_id = d.get("id")
+        raw_cx = d.get("cx")
+        raw_area = d.get("area")
+
         normalize_aruco(d)
+
+        print(
+            f"[PI_ARUCO_FILTER] raw_aruco={raw_aruco} raw_id={raw_id} "
+            f"raw_cx={raw_cx} raw_area={raw_area} -> "
+            f"aruco={d.get('aruco')} id={d.get('id')} "
+            f"cx={d.get('cx')} area={d.get('area')} "
+            f"min_area={MIN_ARUCO_AREA} stable_count={ARUCO_STABLE_COUNT}",
+            flush=True,
+        )
 
         # Ignore AI-G-side obstacle/person fields.
         d["worker"] = 0
