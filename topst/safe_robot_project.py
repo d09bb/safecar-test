@@ -364,6 +364,12 @@ class SafeTopstState:
         self.follow_last_turn_ms = 0
         self.follow_last_turn_dir = "CENTER"
 
+        # HARD_CODE_START_TO_1
+        # For the first segment, ArUco 1 may be outside camera detection range.
+        # Drive forward blindly for a short time unless obstacle is detected.
+        self.blind_forward_until_ms = 0
+        self.blind_forward_done_targets = set()
+
     def targets_from_mask(self, mask):
         """
         Fixed route policy.
@@ -436,6 +442,8 @@ class SafeTopstState:
         self.arrival_hold_target = -1
         self.pending_target = -1
         self.last_reached = -1
+        self.blind_forward_until_ms = 0
+        self.blind_forward_done_targets = set()
 
         print(
             f"[SAFE_TOPST LOCK] mask={mask}, route={self.target_list}, "
@@ -505,12 +513,12 @@ def make_cmd(seq, ttl, mode, target, drive, speed, steer="CENTER", servo=90, buz
 
 def decide_follow(cx, center=320, deadband=10, speed=40, area=0):
     """
-    Reduced-turn ArUco tracking.
+    No-sudden-turn ArUco tracking.
 
-    Goal:
-      - Do not rotate aggressively when ArUco is only slightly left/right.
-      - Move forward unless the marker is near the image edge.
-      - Use smaller turn speed to reduce body rotation angle.
+    Policy:
+      - Once target ArUco is visible with meaningful area, keep moving forward.
+      - Turn only when the marker is very small and near the image edge.
+      - This prevents sudden large turns that lose ArUco.
     """
     try:
         cx = int(cx)
@@ -526,16 +534,19 @@ def decide_follow(cx, center=320, deadband=10, speed=40, area=0):
     error = cx - center
 
     AUTO_FORWARD_SPEED = 35
-    AUTO_TURN_SPEED = 65
+    AUTO_TURN_SPEED = 60
 
-    # Wider band = less turning.
-    # Only extreme left/right marker position becomes TURN.
-    if area >= 50000:
-        turn_band = 260
-    elif area >= 25000:
-        turn_band = 230
-    else:
-        turn_band = 200
+    # Close enough or stable enough: do not turn. Just approach.
+    if area >= 25000:
+        print(
+            f"[FOLLOW_DEBUG] cx={cx} center={center} error={error} "
+            f"area={area} policy=FORWARD_LOCK",
+            flush=True,
+        )
+        return "FORWARD", AUTO_FORWARD_SPEED, "CENTER"
+
+    # Far/small marker only: turn if it is near the image edge.
+    turn_band = 280
 
     print(
         f"[FOLLOW_DEBUG] cx={cx} center={center} error={error} "
@@ -565,6 +576,30 @@ def decide_avoid(p, speed):
         return "AUTO_AVOID", "TURN_LEFT", speed, "LEFT", "WARN", "OBSTACLE_CENTER"
 
     return "AUTO_AVOID", "TURN_LEFT", speed, "LEFT", "WARN", "OBSTACLE"
+
+def start_post0_turn_to_1(state, now):
+    """Start hard-coded transition maneuver from ID0 to ID1."""
+    turn_ms = int(os.environ.get("TOPST_POST0_TURN_MS", "4000"))
+
+    state.current_target = 1
+    state.pending_target = -1
+    state.arrival_hold_until_ms = 0
+    state.arrival_hold_target = -1
+    state.reached_count = 0
+    state.last_target_seen_ms = 0
+    state.last_target_cx = 320
+    state.last_target_area = 0
+    state.follow_forward_until_ms = 0
+    state.post0_maneuver_stage = "TURN_RIGHT"
+    state.post0_maneuver_until_ms = now + turn_ms
+    state.post0_maneuver_done = False
+
+    print(
+        f"[POST0_MANEUVER_START] next_target=1 stage=TURN_RIGHT ms={turn_ms}",
+        flush=True,
+    )
+
+
 
 def role_topst(args):
     state = SafeTopstState(parse_targets(args.targets))
@@ -684,22 +719,74 @@ def role_topst(args):
 
 
         obstacle = safe_int(p.get("obstacle", 0), 0)
-        # FINAL_AREA100000_OBSTACLE_POLICY
-        # Current target ArUco area < 100000: keep obstacle sensor value.
-        # Current target ArUco area >= 100000: marker arrival zone, ignore obstacle.
+
+        # TARGET_MARKER_OBSTACLE_GATE
+        # With reach_area=60000, the target board can be detected by ultrasonic
+        # before TARGET_REACHED is completed. If current target ArUco is visible
+        # and area is large enough, treat ultrasonic obstacle as the target board.
+        TARGET_OBSTACLE_BYPASS_AREA = int(os.environ.get("TOPST_TARGET_OBSTACLE_BYPASS_AREA", "30000"))
+        SIDE_REACH_AREA = int(os.environ.get("TOPST_SIDE_REACH_AREA", "50000"))
+        SIDE_REACH_RECENT_MS = int(os.environ.get("TOPST_SIDE_REACH_RECENT_MS", "1200"))
+
         _target_aruco_visible = (
             aruco == 1
             and marker_id == state.current_target
             and state.current_target in (0, 1, 2)
         )
-        if _target_aruco_visible and area >= 100000:
+
+        _target_seen_recent = (
+            manual != 1
+            and getattr(state, "last_target_seen_ms", 0) > 0
+            and (now - getattr(state, "last_target_seen_ms", 0)) <= SIDE_REACH_RECENT_MS
+        )
+
+        _side_area_memory = max(
+            area if _target_aruco_visible else 0,
+            getattr(state, "last_target_area", 0),
+        )
+
+        _side_arrival_candidate = (
+            obstacle == 1
+            and (_target_aruco_visible or _target_seen_recent)
+            and _side_area_memory >= SIDE_REACH_AREA
+        )
+
+        if _side_arrival_candidate:
+            # Slanted/side approach: area may be below normal reach_area,
+            # but ultrasonic is seeing the target board. Synthesize arrival.
+            aruco = 1
+            marker_id = state.current_target
+            if not _target_aruco_visible:
+                cx = getattr(state, "last_target_cx", args.center)
+            area = max(area, args.reach_area)
             obstacle = 0
             state.obstacle_latched = False
             state.obstacle_seen_count = 0
             state.obstacle_clear_count = args.obstacle_clear_count
-            print(f"[AREA100000_OBS_IGNORE] target={state.current_target} area={area}", flush=True)
-        elif _target_aruco_visible and area < 100000:
-            print(f"[AREA100000_OBS_ACTIVE] target={state.current_target} area={area} obstacle={obstacle}", flush=True)
+            print(
+                f"[SIDE_ARRIVAL_SYNTH] target={state.current_target} "
+                f"area_mem={_side_area_memory} side_area={SIDE_REACH_AREA} "
+                f"reach={args.reach_area}",
+                flush=True,
+            )
+
+        elif _target_aruco_visible and area >= TARGET_OBSTACLE_BYPASS_AREA:
+            obstacle = 0
+            state.obstacle_latched = False
+            state.obstacle_seen_count = 0
+            state.obstacle_clear_count = args.obstacle_clear_count
+            print(
+                f"[TARGET_OBS_BYPASS] target={state.current_target} "
+                f"area={area} bypass={TARGET_OBSTACLE_BYPASS_AREA}",
+                flush=True,
+            )
+
+        elif _target_aruco_visible:
+            print(
+                f"[TARGET_OBS_ACTIVE] target={state.current_target} "
+                f"area={area} obstacle={obstacle} bypass={TARGET_OBSTACLE_BYPASS_AREA}",
+                flush=True,
+            )
         # Obstacle debounce:
         # require consecutive obstacle detections before AUTO_AVOID.
         if obstacle == 1:
@@ -735,6 +822,11 @@ def role_topst(args):
         search_dir = "CENTER"
         servo = 90
 
+        # HARD_CODE_START_TO_1 parameters.
+        BLIND_FORWARD_TARGET = int(os.environ.get("TOPST_BLIND_FORWARD_TARGET", "0"))
+        BLIND_FORWARD_MS = int(os.environ.get("TOPST_BLIND_FORWARD_MS", "2500"))
+        BLIND_FORWARD_SPEED = int(os.environ.get("TOPST_BLIND_FORWARD_SPEED", "35"))
+
         if state.finished:
             mode = "FINISH"
             drive = "STOP"
@@ -763,6 +855,86 @@ def role_topst(args):
         elif fault == 1:
             mode = "SAFETY_STOP"
             fault_text = "AIG_FAULT"
+
+        elif manual != 1 and getattr(state, "post0_stage", "NONE") != "NONE":
+            # POST0_TURN_TO_1 hard-coded maneuver.
+            # This branch is before obstacle hold so the reached ArUco board
+            # does not stop the transition to target 1.
+            turn_speed = int(os.environ.get("TOPST_POST0_TURN_SPEED", "70"))
+            forward_speed = int(os.environ.get("TOPST_POST0_FORWARD_SPEED", "35"))
+            wait_ms = int(os.environ.get("TOPST_POST0_WAIT_MS", "500"))
+            forward_ms = int(os.environ.get("TOPST_POST0_FORWARD_MS", "1000"))
+
+            # If ID1 appears during the maneuver, cancel maneuver and let normal tracking start next cycle.
+            if aruco == 1 and marker_id == 1:
+                state.post0_stage = "NONE"
+                state.post0_until_ms = 0
+                state.post0_done = True
+                state.reached_count = 0
+                state.last_target_seen_ms = 0
+                mode = "GO_TO_TARGET"
+                target = 1
+                drive, speed, steer = decide_follow(cx, args.center, args.deadband, args.speed, area)
+                servo = 90
+                buzzer = "OFF"
+                fault_text = "POST0_CANCEL_ID1_SEEN"
+                print("[POST0_MANEUVER_CANCEL] id1 detected", flush=True)
+
+            else:
+                if now >= state.post0_until_ms:
+                    if state.post0_stage == "TURN_RIGHT":
+                        state.post0_stage = "WAIT"
+                        state.post0_until_ms = now + wait_ms
+                        print(f"[POST0_MANEUVER_STAGE] WAIT ms={wait_ms}", flush=True)
+                    elif state.post0_stage == "WAIT":
+                        state.post0_stage = "FORWARD"
+                        state.post0_until_ms = now + forward_ms
+                        print(f"[POST0_MANEUVER_STAGE] FORWARD ms={forward_ms}", flush=True)
+                    elif state.post0_stage == "FORWARD":
+                        state.post0_stage = "NONE"
+                        state.post0_until_ms = 0
+                        state.post0_done = True
+                        state.reached_count = 0
+                        state.last_target_seen_ms = 0
+                        mode = "SEARCH_TARGET"
+                        target = 1
+                        drive = "STOP"
+                        speed = 0
+                        steer = "CENTER"
+                        servo = 90
+                        buzzer = "OFF"
+                        fault_text = "POST0_MANEUVER_DONE"
+                        print("[POST0_MANEUVER_DONE] target=1", flush=True)
+
+                if state.post0_stage == "TURN_RIGHT":
+                    mode = "POST0_TURN_TO_1"
+                    target = 1
+                    drive = "TURN_RIGHT"
+                    speed = turn_speed
+                    steer = "RIGHT"
+                    servo = 90
+                    buzzer = "OFF"
+                    fault_text = "POST0_TURN_TO_1"
+
+                elif state.post0_stage == "WAIT":
+                    mode = "POST0_WAIT"
+                    target = 1
+                    drive = "STOP"
+                    speed = 0
+                    steer = "CENTER"
+                    servo = 90
+                    buzzer = "OFF"
+                    fault_text = "POST0_WAIT"
+
+                elif state.post0_stage == "FORWARD":
+                    mode = "POST0_FORWARD_TO_1"
+                    target = 1
+                    drive = "FORWARD"
+                    speed = forward_speed
+                    steer = "CENTER"
+                    servo = 90
+                    buzzer = "OFF"
+                    fault_text = "POST0_FORWARD_TO_1"
 
         elif (manual != 1) and (not args.ignore_obstacle) and obstacle == 1 and not arrival_candidate:
             # Early obstacle/manual priority guard.
@@ -797,7 +969,17 @@ def role_topst(args):
                 state.reached_count = 0
         
                 remaining = [t for t in state.target_list if t not in state.visited]
-                if remaining:
+                if reached_target == 0 and 1 in remaining and not getattr(state, "post0_maneuver_done", False):
+                    start_post0_turn_to_1(state, now)
+                    mode = "POST0_TURN_TO_1"
+                    target = state.current_target
+                    drive = "TURN_RIGHT"
+                    speed = int(os.environ.get("TOPST_POST0_TURN_SPEED", "70"))
+                    steer = "RIGHT"
+                    servo = 90
+                    buzzer = "OFF"
+                    fault_text = "POST0_TURN_TO_1"
+                elif remaining:
                     state.select_next_target()
                     mode = "SEARCH_TARGET"
                     drive = "STOP"
@@ -936,7 +1118,50 @@ def role_topst(args):
                     servo = 90
                     buzzer = "OFF"
                     fault_text = "MISSION_COMPLETE"
+        elif (
+            manual != 1
+            and state.current_target == BLIND_FORWARD_TARGET
+            and state.current_target not in getattr(state, "blind_forward_done_targets", set())
+            and not (aruco == 1 and marker_id == state.current_target)
+        ):
+            if getattr(state, "blind_forward_until_ms", 0) <= 0:
+                state.blind_forward_until_ms = now + BLIND_FORWARD_MS
+                print(
+                    f"[BLIND_FORWARD_START] target={state.current_target} "
+                    f"ms={BLIND_FORWARD_MS} speed={BLIND_FORWARD_SPEED}",
+                    flush=True,
+                )
+
+            if now < state.blind_forward_until_ms:
+                mode = "BLIND_FORWARD"
+                drive = "FORWARD"
+                speed = BLIND_FORWARD_SPEED
+                steer = "CENTER"
+                servo = 90
+                buzzer = "OFF"
+                fault_text = "BLIND_FORWARD"
+            else:
+                state.blind_forward_done_targets.add(state.current_target)
+                state.blind_forward_until_ms = 0
+                mode = "SEARCH_TARGET"
+                drive = "STOP"
+                speed = 0
+                steer = "CENTER"
+                servo = 90
+                buzzer = "OFF"
+                fault_text = "BLIND_FORWARD_DONE"
+                print(
+                    f"[BLIND_FORWARD_DONE] target={state.current_target}",
+                    flush=True,
+                )
+
         elif manual != 1 and aruco == 1 and marker_id == state.current_target:
+            # HARD_CODE_START_TO_1:
+            # If target is detected during blind forward, immediately switch to ArUco tracking.
+            if hasattr(state, "blind_forward_done_targets"):
+                state.blind_forward_done_targets.add(state.current_target)
+                state.blind_forward_until_ms = 0
+
             # Valid target seen. Save target memory for short hold.
             state.last_target_seen_ms = now
             state.last_target_cx = cx
@@ -988,23 +1213,37 @@ def role_topst(args):
                     fault_text = "ARRIVAL_HOLD"
 
                 else:
-                    # Transit waypoint. Do not wait. Immediately search next target.
-                    state.current_target = _remaining[0]
-                    state.pending_target = -1
-                    state.arrival_hold_until_ms = 0
-                    state.arrival_hold_target = -1
-                    state.reached_count = 0
-                    state.last_target_seen_ms = 0
-                    state.last_reached = _reached
-                    mode = "SEARCH_TARGET"
-                    target = state.current_target
-                    drive = "STOP"
-                    speed = 0
-                    steer = "CENTER"
-                    servo = 90
-                    buzzer = "OFF"
-                    fault_text = "NEXT_TARGET"
-                    print(f"[TRANSIT_NEXT] reached={_reached} next_target={state.current_target}", flush=True)
+                    # Transit waypoint.
+                    # Special hard-coded transition: after reaching ID0, rotate right to face ID1.
+                    if _reached == 0 and 1 in _remaining and not getattr(state, "post0_maneuver_done", False):
+                        state.last_reached = _reached
+                        start_post0_turn_to_1(state, now)
+                        mode = "POST0_TURN_TO_1"
+                        target = state.current_target
+                        drive = "TURN_RIGHT"
+                        speed = int(os.environ.get("TOPST_POST0_TURN_SPEED", "70"))
+                        steer = "RIGHT"
+                        servo = 90
+                        buzzer = "OFF"
+                        fault_text = "POST0_TURN_TO_1"
+                    else:
+                        # Normal transit. Do not wait. Immediately search next target.
+                        state.current_target = _remaining[0]
+                        state.pending_target = -1
+                        state.arrival_hold_until_ms = 0
+                        state.arrival_hold_target = -1
+                        state.reached_count = 0
+                        state.last_target_seen_ms = 0
+                        state.last_reached = _reached
+                        mode = "SEARCH_TARGET"
+                        target = state.current_target
+                        drive = "STOP"
+                        speed = 0
+                        steer = "CENTER"
+                        servo = 90
+                        buzzer = "OFF"
+                        fault_text = "NEXT_TARGET"
+                        print(f"[TRANSIT_NEXT] reached={_reached} next_target={state.current_target}", flush=True)
             else:
                 mode = "GO_TO_TARGET"
                 drive, speed, steer = decide_follow(cx, args.center, args.deadband, args.speed, area)
