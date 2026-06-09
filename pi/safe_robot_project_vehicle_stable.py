@@ -35,7 +35,7 @@ FINAL_START_BOOST = 75
 # Auto mode servo-body alignment.
 # If the camera sees the marker far from the vehicle center direction,
 # rotate the vehicle first while slowly returning the camera to center.
-AUTO_SERVO_ALIGN_DEADBAND_DEG = 25
+AUTO_SERVO_ALIGN_DEADBAND_DEG = 35
 AUTO_SERVO_ALIGN_STEP_DEG = 8
 AUTO_SERVO_ALIGN_MIN_SPEED = 35
 
@@ -602,7 +602,7 @@ def main():
             # Reason:
             # TOPST already decides TURN_LEFT/RIGHT from ArUco cx.
             # Servo-angle override can rotate opposite to the actual marker direction.
-            # drive, speed = apply_auto_servo_alignment(mode, drive, speed)
+            drive, speed = apply_auto_servo_alignment(mode, drive, speed)
 
             # FINAL_TURN_DIRECTION_SPEED_FIX
             # Forward/backward keep the previous safe cruise policy.

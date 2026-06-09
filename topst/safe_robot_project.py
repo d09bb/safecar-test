@@ -357,6 +357,13 @@ class SafeTopstState:
         self.last_target_cx = 160
         self.last_target_area = 0
 
+        # Follow stabilizer:
+        # Allow only a short TURN pulse, then force FORWARD for a short interval.
+        # This prevents left-right oscillation while approaching ArUco.
+        self.follow_forward_until_ms = 0
+        self.follow_last_turn_ms = 0
+        self.follow_last_turn_dir = "CENTER"
+
     def targets_from_mask(self, mask):
         """
         Fixed route policy.
@@ -446,6 +453,10 @@ class SafeTopstState:
             self.obstacle_latched = False
         if hasattr(self, "last_target_seen_ms"):
             self.last_target_seen_ms = 0
+        if hasattr(self, "follow_forward_until_ms"):
+            self.follow_forward_until_ms = 0
+            self.follow_last_turn_ms = 0
+            self.follow_last_turn_dir = "CENTER"
 
         self.reached_count = 0
 
@@ -707,6 +718,16 @@ def role_topst(args):
 
         obstacle_active = state.obstacle_latched
 
+        # If the current target ArUco is already at arrival size,
+        # treat it as a destination, not as an obstacle.
+        # This prevents the ultrasonic sensor from blocking TARGET_REACHED.
+        arrival_candidate = (
+            manual != 1
+            and aruco == 1
+            and marker_id == state.current_target
+            and area >= args.reach_area
+        )
+
         mode = "SEARCH_TARGET"
         drive = "STOP"
         speed = 0
@@ -745,8 +766,10 @@ def role_topst(args):
             mode = "SAFETY_STOP"
             fault_text = "AIG_FAULT"
 
-        elif (manual != 1) and (not args.ignore_obstacle) and obstacle == 1:
-            # Early obstacle/manual priority guard: obstacle safety must override auto/perception timeout.
+        elif (manual != 1) and (not args.ignore_obstacle) and obstacle == 1 and not arrival_candidate:
+            # Early obstacle/manual priority guard.
+            # Exception: if current target ArUco is already at arrival size,
+            # allow the TARGET_REACHED branch to process it.
             mode = "OBSTACLE_HOLD"
             drive = "STOP"
             speed = 0
@@ -836,7 +859,7 @@ def role_topst(args):
             fault_text = "NONE"
             buzzer = "OFF"
 
-        elif (manual != 1) and (not args.ignore_obstacle) and obstacle == 1:
+        elif (manual != 1) and (not args.ignore_obstacle) and obstacle == 1 and not arrival_candidate:
             mode = "OBSTACLE_HOLD"
             drive = "STOP"
             speed = 0
@@ -987,6 +1010,37 @@ def role_topst(args):
             else:
                 mode = "GO_TO_TARGET"
                 drive, speed, steer = decide_follow(cx, args.center, args.deadband, args.speed, area)
+
+                # TURN_PULSE_FORWARD_COMMIT
+                # If a TURN is requested, allow it only once briefly.
+                # Then force FORWARD for a short time so the robot actually approaches the marker.
+                if now < getattr(state, "follow_forward_until_ms", 0):
+                    if drive in ("TURN_LEFT", "TURN_RIGHT"):
+                        print(
+                            f"[FOLLOW_COMMIT_FORWARD] suppress={drive} "
+                            f"until={state.follow_forward_until_ms} now={now}",
+                            flush=True,
+                        )
+                    drive = "FORWARD"
+                    speed = 35
+                    steer = "CENTER"
+                elif drive in ("TURN_LEFT", "TURN_RIGHT"):
+                    # Permit one short turn pulse, then commit to forward.
+                    state.follow_last_turn_ms = now
+                    state.follow_last_turn_dir = drive
+                    state.follow_forward_until_ms = now + 700
+                    print(
+                        f"[FOLLOW_TURN_PULSE] drive={drive} cx={cx} area={area} "
+                        f"forward_until={state.follow_forward_until_ms}",
+                        flush=True,
+                    )
+                else:
+                    # Already centered enough; keep moving forward.
+                    state.follow_forward_until_ms = max(
+                        getattr(state, "follow_forward_until_ms", 0),
+                        now + 250,
+                    )
+
                 fault_text = "NONE"
 
         elif manual != 1 and state.last_target_seen_ms > 0 and (now - state.last_target_seen_ms) <= args.target_lost_hold_ms:
@@ -994,6 +1048,12 @@ def role_topst(args):
             mode = "GO_TO_TARGET_HOLD"
             hold_cx = state.last_target_cx
             drive, speed, steer = decide_follow(hold_cx, args.center, args.deadband, args.speed, state.last_target_area)
+
+            if now < getattr(state, "follow_forward_until_ms", 0):
+                drive = "FORWARD"
+                speed = 35
+                steer = "CENTER"
+
             fault_text = "TARGET_HOLD"
 
         elif False:
