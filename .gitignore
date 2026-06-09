@@ -22,3 +22,5 @@ external/topst-safe-car/
 pi_latest/
 topst_latest/
 _backup/
+pi_latest_sync/
+topst_latest_sync/

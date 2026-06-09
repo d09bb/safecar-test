@@ -492,32 +492,45 @@ def make_cmd(seq, ttl, mode, target, drive, speed, steer="CENTER", servo=90, buz
         f"buzzer={buzzer} fault={fault} dir={search_dir}"
     )
 
-def decide_follow(cx, *args, **kwargs):
+def decide_follow(cx, center=320, deadband=10, speed=40, area=0):
     """
-    Stable ArUco tracking for heavy vehicle.
+    Area-based ArUco tracking.
 
-    Policy:
-    - If marker is near the center, go forward.
-    - Do not turn for small x error.
-    - Turn only when marker is far from center.
-    - Turn speed is intentionally low to avoid overshoot.
+    Far marker:
+      - react normally to x-axis error.
+
+    Close marker:
+      - widen forward band so the vehicle does not over-rotate.
+      - only turn if the marker is extremely off-center.
     """
     try:
         cx = int(cx)
     except Exception:
-        cx = 320
+        cx = int(center)
 
-    CENTER_X = 320
+    try:
+        area = int(area)
+    except Exception:
+        area = 0
 
-    # Wider deadband prevents left-right oscillation.
-    FORWARD_BAND = 140
+    center = int(center)
+    error = cx - center
 
+    # Base speed policy. Pi vehicle code will apply its own final PWM limits.
     AUTO_FORWARD_SPEED = 30
-    AUTO_TURN_SPEED = 22
+    AUTO_TURN_SPEED = 60
 
-    error = cx - CENTER_X
+    # The closer the marker is, the wider the forward band becomes.
+    if area >= 85000:
+        forward_band = 260
+    elif area >= 60000:
+        forward_band = 220
+    elif area >= 30000:
+        forward_band = 180
+    else:
+        forward_band = 140
 
-    if abs(error) <= FORWARD_BAND:
+    if abs(error) <= forward_band:
         return "FORWARD", AUTO_FORWARD_SPEED, "CENTER"
 
     if error < 0:
@@ -969,14 +982,14 @@ def role_topst(args):
                     print(f"[TRANSIT_NEXT] reached={_reached} next_target={state.current_target}", flush=True)
             else:
                 mode = "GO_TO_TARGET"
-                drive, speed, steer = decide_follow(cx, args.center, args.deadband, args.speed)
+                drive, speed, steer = decide_follow(cx, args.center, args.deadband, args.speed, area)
                 fault_text = "NONE"
 
         elif manual != 1 and state.last_target_seen_ms > 0 and (now - state.last_target_seen_ms) <= args.target_lost_hold_ms:
             # Target temporarily disappeared. Keep following last known target direction.
             mode = "GO_TO_TARGET_HOLD"
             hold_cx = state.last_target_cx
-            drive, speed, steer = decide_follow(hold_cx, args.center, args.deadband, args.speed)
+            drive, speed, steer = decide_follow(hold_cx, args.center, args.deadband, args.speed, state.last_target_area)
             fault_text = "TARGET_HOLD"
 
         elif False:

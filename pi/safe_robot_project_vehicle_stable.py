@@ -11,7 +11,7 @@ SERVO_CENTER = 90
 # Use a short kick only when starting/changing direction,
 # then keep low cruise speed for safety.
 FINAL_SAFE_KICK_PWM = 70
-FINAL_AUTO_CRUISE_SPEED = 30
+FINAL_AUTO_CRUISE_SPEED = 40
 FINAL_MANUAL_STRAIGHT_SPEED = 35
 FINAL_MANUAL_TURN_SPEED = 30
 
@@ -556,7 +556,10 @@ def main():
                     if speed > FINAL_AUTO_MAX:
                         speed = FINAL_AUTO_MAX
 
-                if last_drive == "STOP" or drive != last_drive:
+                # Smooth start boost:
+                # Apply boost only when starting from STOP.
+                # Do not re-boost on every FORWARD/TURN command change.
+                if last_drive == "STOP":
                     if speed < FINAL_START_BOOST:
                         speed = FINAL_START_BOOST
             fault = kv.get("fault", "NONE")
@@ -617,7 +620,7 @@ def main():
                     else:
                         cruise_speed = FINAL_AUTO_CRUISE_SPEED
 
-                    if last_drive == "STOP" or drive != last_drive:
+                    if last_drive == "STOP":
                         speed = FINAL_SAFE_KICK_PWM
                     else:
                         speed = cruise_speed
@@ -625,7 +628,7 @@ def main():
             # AUTO_TURN_SPEED_LIMIT_PATCH
             # Reduce AUTO mode left/right turn speed only.
             # MANUAL turn, forward, backward, and stop are unchanged.
-            AUTO_TURN_SPEED_LIMIT = 60
+            AUTO_TURN_SPEED_LIMIT = 70
             if mode != "MANUAL" and drive in ("TURN_LEFT", "TURN_RIGHT", "AVOID_LEFT", "AVOID_RIGHT"):
                 if speed > AUTO_TURN_SPEED_LIMIT:
                     speed = AUTO_TURN_SPEED_LIMIT
