@@ -364,11 +364,21 @@ class SafeTopstState:
         self.follow_last_turn_ms = 0
         self.follow_last_turn_dir = "CENTER"
 
+        # POST0_TURN_TO_1
+        # After reaching ID0, rotate right to face ID1,
+        # wait briefly, then drive forward before normal ID1 tracking.
+        self.post0_stage = "NONE"
+        self.post0_until_ms = 0
+        self.post0_done = False
+
         # HARD_CODE_START_TO_1
         # For the first segment, ArUco 1 may be outside camera detection range.
         # Drive forward blindly for a short time unless obstacle is detected.
         self.blind_forward_until_ms = 0
         self.blind_forward_done_targets = set()
+        self.post0_stage = "NONE"
+        self.post0_until_ms = 0
+        self.post0_done = False
 
     def targets_from_mask(self, mask):
         """
@@ -590,9 +600,9 @@ def start_post0_turn_to_1(state, now):
     state.last_target_cx = 320
     state.last_target_area = 0
     state.follow_forward_until_ms = 0
-    state.post0_maneuver_stage = "TURN_RIGHT"
-    state.post0_maneuver_until_ms = now + turn_ms
-    state.post0_maneuver_done = False
+    state.post0_stage = "TURN_RIGHT"
+    state.post0_until_ms = now + turn_ms
+    state.post0_done = False
 
     print(
         f"[POST0_MANEUVER_START] next_target=1 stage=TURN_RIGHT ms={turn_ms}",
@@ -969,7 +979,7 @@ def role_topst(args):
                 state.reached_count = 0
         
                 remaining = [t for t in state.target_list if t not in state.visited]
-                if reached_target == 0 and 1 in remaining and not getattr(state, "post0_maneuver_done", False):
+                if reached_target == 0 and 1 in remaining and not getattr(state, "post0_done", False):
                     start_post0_turn_to_1(state, now)
                     mode = "POST0_TURN_TO_1"
                     target = state.current_target
@@ -1215,7 +1225,7 @@ def role_topst(args):
                 else:
                     # Transit waypoint.
                     # Special hard-coded transition: after reaching ID0, rotate right to face ID1.
-                    if _reached == 0 and 1 in _remaining and not getattr(state, "post0_maneuver_done", False):
+                    if _reached == 0 and 1 in _remaining and not getattr(state, "post0_done", False):
                         state.last_reached = _reached
                         start_post0_turn_to_1(state, now)
                         mode = "POST0_TURN_TO_1"
