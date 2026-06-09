@@ -34,3 +34,4 @@ export ARUCO_STABLE_COUNT=${ARUCO_STABLE_COUNT:-5}
 # Ultrasonic obstacle threshold
 # 130mm = 13cm
 export ULTRA_OBSTACLE_MM=${ULTRA_OBSTACLE_MM:-130}
+export TOPST_TARGET_LOST_HOLD_MS=1200

@@ -36,8 +36,14 @@ FINAL_START_BOOST = 75
 # If the camera sees the marker far from the vehicle center direction,
 # rotate the vehicle first while slowly returning the camera to center.
 AUTO_SERVO_ALIGN_DEADBAND_DEG = 35
-AUTO_SERVO_ALIGN_STEP_DEG = 8
+AUTO_SERVO_ALIGN_STEP_DEG = 5
 AUTO_SERVO_ALIGN_MIN_SPEED = 35
+
+# After one body-align turn pulse, force forward briefly.
+# This prevents "turn-stop-search-turn" oscillation.
+AUTO_SERVO_ALIGN_FORWARD_COMMIT_MS = 800
+AUTO_SERVO_ALIGN_FORWARD_SPEED = 35
+align_forward_until_ms = 0
 
 
 
@@ -405,18 +411,29 @@ def to_int(v, default=0):
 def apply_auto_servo_alignment(mode, drive, speed):
     """
     Auto alignment policy:
-    - SERVO_CENTER = 90.
-    - current_servo_angle > 90 means marker is on vehicle-left side.
-    - current_servo_angle < 90 means marker is on vehicle-right side.
-    - While marker is off-axis, rotate vehicle toward marker and bring servo back to center.
+    - If camera servo is off-center, give only one short body-turn pulse.
+    - Then force FORWARD for a short interval.
+    - This lets the robot approach the marker instead of rotating forever.
     """
-    global current_servo_angle
+    global current_servo_angle, align_forward_until_ms
+
+    t = now_ms()
 
     if mode not in ("GO_TO_TARGET", "GO_TO_TARGET_HOLD"):
+        align_forward_until_ms = 0
         return drive, speed
 
     if current_servo_angle is None:
         return drive, speed
+
+    # Forward commit window after a turn pulse.
+    if t < align_forward_until_ms:
+        print(
+            f"[AUTO_SERVO_ALIGN_FORWARD_COMMIT] angle={current_servo_angle} "
+            f"until={align_forward_until_ms} now={t}",
+            flush=True,
+        )
+        return "FORWARD", max(int(speed), AUTO_SERVO_ALIGN_FORWARD_SPEED)
 
     err = int(current_servo_angle) - SERVO_CENTER
 
@@ -424,26 +441,30 @@ def apply_auto_servo_alignment(mode, drive, speed):
         return drive, speed
 
     if err > 0:
-        # Camera is looking left, so rotate vehicle left.
+        # Camera is looking left, so rotate vehicle left briefly,
+        # while moving the camera back toward center.
         new_angle = max(SERVO_CENTER, int(current_servo_angle) - AUTO_SERVO_ALIGN_STEP_DEG)
         set_servo_angle(new_angle, force=True)
+        align_forward_until_ms = t + AUTO_SERVO_ALIGN_FORWARD_COMMIT_MS
         print(
-            f"[AUTO_SERVO_ALIGN] marker_side=LEFT angle={current_servo_angle} "
-            f"err={err} override=TURN_LEFT",
+            f"[AUTO_SERVO_ALIGN_TURN_PULSE] marker_side=LEFT angle={current_servo_angle} "
+            f"err={err} override=TURN_LEFT forward_until={align_forward_until_ms}",
             flush=True,
         )
         return "TURN_LEFT", max(int(speed), AUTO_SERVO_ALIGN_MIN_SPEED)
 
-    else:
-        # Camera is looking right, so rotate vehicle right.
-        new_angle = min(SERVO_CENTER, int(current_servo_angle) + AUTO_SERVO_ALIGN_STEP_DEG)
-        set_servo_angle(new_angle, force=True)
-        print(
-            f"[AUTO_SERVO_ALIGN] marker_side=RIGHT angle={current_servo_angle} "
-            f"err={err} override=TURN_RIGHT",
-            flush=True,
-        )
-        return "TURN_RIGHT", max(int(speed), AUTO_SERVO_ALIGN_MIN_SPEED)
+    # Camera is looking right, so rotate vehicle right briefly,
+    # while moving the camera back toward center.
+    new_angle = min(SERVO_CENTER, int(current_servo_angle) + AUTO_SERVO_ALIGN_STEP_DEG)
+    set_servo_angle(new_angle, force=True)
+    align_forward_until_ms = t + AUTO_SERVO_ALIGN_FORWARD_COMMIT_MS
+    print(
+        f"[AUTO_SERVO_ALIGN_TURN_PULSE] marker_side=RIGHT angle={current_servo_angle} "
+        f"err={err} override=TURN_RIGHT forward_until={align_forward_until_ms}",
+        flush=True,
+    )
+    return "TURN_RIGHT", max(int(speed), AUTO_SERVO_ALIGN_MIN_SPEED)
+
 
 def apply_drive(drive, speed, mode="UNKNOWN"):
     if drive == "FORWARD":
@@ -516,21 +537,32 @@ def main():
             if mode == "SEARCH_TARGET":
                 if target_id != last_search_target and target_id in (0, 1, 2):
                     if search_dir == "LEFT":
-                        spin_vehicle("LEFT", 0.15)
+                        spin_vehicle("LEFT", 0.08)
                     elif search_dir == "RIGHT":
-                        spin_vehicle("RIGHT", 0.15)
+                        spin_vehicle("RIGHT", 0.08)
 
                     last_search_target = target_id
                     last_target_servo_angle = SERVO_CENTER
                     servo_last_mode = "INIT"
-            else:
+            # Do not reset last_search_target on every GO_TO_TARGET.
+            # Otherwise, when ArUco flickers:
+            #   SEARCH_TARGET -> GO_TO_TARGET -> SEARCH_TARGET
+            # the same target spins again and again.
+            elif mode in (
+                "IDLE",
+                "WAIT_START",
+                "FINISH",
+                "COMPLETION",
+                "SAFETY_STOP",
+                "ARRIVAL_HOLD",
+            ):
                 last_search_target = -1
 
             # EXTREME_TURN_ONLY_PWM100
             # AUTO/MANUAL both: only left/right turn commands use max PWM 100.
             # Forward/backward/stop are not changed.
             if drive in ("TURN_LEFT", "TURN_RIGHT", "AVOID_LEFT", "AVOID_RIGHT"):
-                speed = 100
+                speed = 70
                 print(f"[EXTREME_TURN_ONLY_PWM100] mode={mode} drive={drive} speed={speed}", flush=True)
 
             # Final speed profile for heavy vehicle.
@@ -598,11 +630,10 @@ def main():
             else:
                 update_servo_by_mode(mode, steer=steer, servo_cmd=servo_cmd)
 
-            # AUTO_SERVO_BODY_ALIGN disabled for demo stability.
-            # Reason:
-            # TOPST already decides TURN_LEFT/RIGHT from ArUco cx.
-            # Servo-angle override can rotate opposite to the actual marker direction.
-            drive, speed = apply_auto_servo_alignment(mode, drive, speed)
+            # AUTO_SERVO_BODY_ALIGN is intentionally disabled.
+            # Direction is controlled only by TOPST ArUco cx decision.
+            # Servo angle must not override FORWARD/TURN commands.
+            # drive, speed = apply_auto_servo_alignment(mode, drive, speed)
 
             # FINAL_TURN_DIRECTION_SPEED_FIX
             # Forward/backward keep the previous safe cruise policy.
@@ -613,7 +644,7 @@ def main():
                 speed = 0
             else:
                 if turn_cmd:
-                    speed = 100
+                    speed = 70
                     print(f"[FINAL_TURN_PWM100] mode={mode} drive={drive} speed={speed}", flush=True)
                 else:
                     if mode == "MANUAL":
